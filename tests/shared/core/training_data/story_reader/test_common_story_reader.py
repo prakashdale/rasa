@@ -297,3 +297,42 @@ async def test_yaml_slot_different_types(stories_file: Text, domain: Domain):
     assert tracker[0].events[3] == SlotSet(key="list_slot", value=["value1", "value2"])
     assert tracker[0].events[4] == SlotSet(key="bool_slot", value=True)
     assert tracker[0].events[5] == SlotSet(key="text_slot", value="some_text")
+
+
+async def test_can_read_test_story_with_or_slot_was_set_statement(tmp_path: Path, domain: Domain):
+    story_with_or_slot_was_set = """
+    stories:
+    - story: simple_story_with_or_slot_was_set
+      steps:
+      - intent: simple
+      - action: utter_default
+      - or:
+        - slot_was_set:
+            - name: joe
+        - slot_was_set:
+            - name: bob
+      - action: utter_greet
+    """
+    stories_path = tmp_path / "stories.yml"
+    stories_path.write_text(story_with_or_slot_was_set, "utf8")
+
+    trackers = await training.load_data(
+        str(stories_path),
+        domain,
+        use_story_concatenation=False,
+        tracker_limit=1000,
+        remove_duplicates=False,
+    )
+    tracker = trackers[0]
+    assert tracker.events[0] == ActionExecuted("action_listen")
+    assert tracker.events[1] == UserUttered(
+        intent={INTENT_NAME_KEY: "simple", "confidence": 1.0},
+        parse_data={
+            "text": "/simple",
+            "intent_ranking": [{"confidence": 1.0, INTENT_NAME_KEY: "simple"}],
+            "intent": {"confidence": 1.0, INTENT_NAME_KEY: "simple"},
+            "entities": [],
+        },
+    )
+    assert tracker.events[2] == ActionExecuted("utter_default")
+    assert tracker.events[3] == SlotSet(key="name", value="joe")

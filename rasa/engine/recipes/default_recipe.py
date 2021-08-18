@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from typing import Dict, Text, Any, Tuple, Type, Optional
+import copy
+from typing import Dict, Text, Any, Tuple, Type, Optional, List
 
+import dataclasses
+
+from rasa.core.policies.ted_policy import TEDPolicy
+from rasa.core.policies.unexpected_intent_policy import UnexpecTEDIntentPolicy
 from rasa.engine.graph import GraphSchema, GraphComponent, SchemaNode
 from rasa.engine.recipes.recipe import Recipe
 
@@ -36,6 +41,30 @@ class FinetuningValidator(GraphComponent):
 
 
 class NLUTrainingDataProvider(GraphComponent):
+    pass
+
+
+class DomainProvider(GraphComponent):
+    pass
+
+
+class DomainWithoutResponsesProvider(GraphComponent):
+    pass
+
+
+class StoryGraphProvider(GraphComponent):
+    pass
+
+
+class TrainingTrackerProvider(GraphComponent):
+    pass
+
+
+class StoryToNLUTrainingDataConverter(GraphComponent):
+    pass
+
+
+class EndToEndFeaturesProvider(GraphComponent):
     pass
 
 
@@ -97,6 +126,9 @@ class DefaultV1Recipe(Recipe):
         last_run_node = "nlu_training_data_provider"
         last_feature_node = None
 
+        tokenizer: Optional[Text] = None
+        featurizers: List[Text] = []
+
         idx = 0
         for item in config["pipeline"]:
             component_name = item.pop("name")
@@ -110,7 +142,7 @@ class DefaultV1Recipe(Recipe):
                     fn="process_training_data",
                     config=item,
                 )
-                last_run_node = node_name
+                last_run_node = tokenizer = node_name
             elif issubclass(component, Featurizer):
                 pretrained_featurizer = [
                     LexicalSyntacticFeaturizer,
@@ -152,6 +184,8 @@ class DefaultV1Recipe(Recipe):
                         config=item,
                     )
                     last_run_node = last_feature_node = node_name
+                # Remember for End-to-End-Featurization
+                featurizers.append(last_run_node)
             elif issubclass(component, IntentClassifier):
                 trainable_classifiers = [
                     DIETClassifier,
@@ -186,6 +220,113 @@ class DefaultV1Recipe(Recipe):
                     )
                     last_run_node = node_name
 
+            idx += 1
+
+        # This starts the Core part of the graph
+        nodes["domain_provider"] = SchemaNode(
+            needs={"importer": "finetuning_validator"},
+            uses=DomainProvider,
+            constructor_name="create",
+            fn="provide",
+            config={},
+            is_target=True,
+            is_input=True,
+        )
+        nodes["domain_without_responses_provider"] = SchemaNode(
+            needs={"domain": "domain_provider"},
+            uses=DomainWithoutResponsesProvider,
+            constructor_name="create",
+            fn="provide",
+            config={},
+            is_input=True,
+        )
+        nodes["story_graph_provider"] = SchemaNode(
+            needs={"importer": "finetuning_validator"},
+            uses=StoryGraphProvider,
+            constructor_name="create",
+            fn="provide",
+            config={},
+            is_input=True,
+        )
+        nodes["training_tracker_provider"] = SchemaNode(
+            needs={
+                "story_graph": "story_graph_provider",
+                "domain": "domain_without_responses_provider",
+            },
+            uses=TrainingTrackerProvider,
+            constructor_name="create",
+            fn="provide",
+            config={},
+        )
+
+        # End-to-End feature creation
+        nodes["story_to_nlu_training_data_converter"] = SchemaNode(
+            needs={
+                "story_graph": "story_graph_provider",
+                "domain": "domain_without_responses_provider",
+            },
+            uses=StoryToNLUTrainingDataConverter,
+            constructor_name="create",
+            fn="convert",
+            config={},
+            is_input=True,
+            resource=None,
+        )
+        if tokenizer is None:
+            raise ValueError("should not happen")
+
+        nodes[f"e2e_{tokenizer}"] = dataclasses.replace(
+            nodes[tokenizer],
+            needs={"training_data": "story_to_nlu_training_data_converter"},
+        )
+        last_node_name = f"e2e_{tokenizer}"
+        for featurizer in featurizers:
+            node = copy.deepcopy(nodes[featurizer])
+            node.needs["training_data"] = last_node_name
+
+            node_name = f"e2e_{featurizer}"
+            nodes[node_name] = node
+            last_node_name = node_name
+
+        node_with_e2e_features = "end_to_end_features_provider"
+        nodes[node_with_e2e_features] = SchemaNode(
+            needs={"training_data": last_node_name,},
+            uses=EndToEndFeaturesProvider,
+            constructor_name="create",
+            fn="provide",
+            config={},
+            resource=None,
+        )
+
+        # Policies
+        import rasa.core.registry
+
+        # last_run_node = "nlu_training_data_provider"
+        # last_feature_node = None
+
+        idx = 0
+        policies_with_e2e_support = [TEDPolicy, UnexpecTEDIntentPolicy]
+        for item in config["policies"]:
+            component_name = item.pop("name")
+            component = rasa.core.registry.policy_from_module_path(component_name)
+
+            node_name = f"train_{component.__name__}{idx}"
+
+            e2e_needs = {}
+            if component in policies_with_e2e_support:
+                e2e_needs = {"end_to_end_features": node_with_e2e_features}
+            nodes[node_name] = SchemaNode(
+                needs={
+                    "training_trackers": "training_tracker_provider",
+                    "domain": "domain_without_responses_provider",
+                    **e2e_needs,
+                },
+                uses=component,
+                constructor_name="create",
+                fn="train",
+                is_target=True,
+                config=item,
+            )
             idx += 1
 
         return GraphSchema(nodes), GraphSchema({})

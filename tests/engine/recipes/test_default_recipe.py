@@ -1,4 +1,5 @@
 import rasa.shared.utils.io
+from rasa.core.policies import SimplePolicyEnsemble
 from rasa.core.policies.memoization import MemoizationPolicy
 from rasa.core.policies.rule_policy import RulePolicy
 from rasa.core.policies.ted_policy import TEDPolicy
@@ -16,9 +17,15 @@ from rasa.engine.recipes.default_recipe import (
     TrainingTrackerProvider,
     StoryToNLUTrainingDataConverter,
     EndToEndFeaturesProvider,
+    NLUMessageConverter,
+    RegexClassifier,
+    NLUPredictionToHistoryAdder,
+    TrackerToMessageConverter,
 )
 from rasa.engine.recipes.recipe import Recipe
+from rasa.engine.storage.resource import Resource
 from rasa.nlu.classifiers.diet_classifier import DIETClassifier
+from rasa.nlu.classifiers.fallback_classifier import FallbackClassifier
 from rasa.nlu.extractors.entity_synonyms import EntitySynonymMapper
 from rasa.nlu.featurizers.sparse_featurizer.count_vectors_featurizer import (
     CountVectorsFeaturizer,
@@ -429,3 +436,315 @@ def test_generate_train_graph():
         assert train_schema.nodes[node_name] == node
 
     assert train_schema == expected_train_schema
+
+
+def test_generate_predict_graph():
+    expected_predict_schema = GraphSchema(
+        {
+            "nlu_message_converter": SchemaNode(
+                needs={},
+                uses=NLUMessageConverter,
+                constructor_name="create",
+                fn="convert",
+                config={},
+                eager=True,
+                resource=None,
+            ),
+            "run_WhitespaceTokenizer0": SchemaNode(
+                needs={"messages": "nlu_message_converter"},
+                uses=WhitespaceTokenizer,
+                constructor_name="create",
+                fn="process",
+                config={},
+                eager=True,
+                resource=None,
+            ),
+            "run_RegexFeaturizer1": SchemaNode(
+                needs={"messages": "run_WhitespaceTokenizer0",},
+                uses=RegexFeaturizer,
+                constructor_name="load",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_RegexFeaturizer1"),
+            ),
+            "run_LexicalSyntacticFeaturizer2": SchemaNode(
+                needs={"messages": "run_RegexFeaturizer1"},
+                uses=LexicalSyntacticFeaturizer,
+                constructor_name="create",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            "run_CountVectorsFeaturizer3": SchemaNode(
+                needs={"messages": "run_LexicalSyntacticFeaturizer2",},
+                uses=CountVectorsFeaturizer,
+                constructor_name="load",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_CountVectorsFeaturizer3"),
+            ),
+            "run_CountVectorsFeaturizer4": SchemaNode(
+                needs={"messages": "run_CountVectorsFeaturizer3",},
+                uses=CountVectorsFeaturizer,
+                constructor_name="load",
+                fn="process",
+                config={"analyzer": "char_wb", "min_ngram": 1, "max_ngram": 4},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_CountVectorsFeaturizer4"),
+            ),
+            "run_DIETClassifier5": SchemaNode(
+                needs={"messages": "run_CountVectorsFeaturizer4",},
+                uses=DIETClassifier,
+                constructor_name="load",
+                fn="process",
+                config={"epochs": 100, "constrain_similarities": True},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_DIETClassifier5"),
+            ),
+            "run_EntitySynonymMapper6": SchemaNode(
+                needs={"messages": "run_DIETClassifier5",},
+                uses=EntitySynonymMapper,
+                constructor_name="load",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            "run_ResponseSelector7": SchemaNode(
+                needs={"messages": "run_EntitySynonymMapper6",},
+                uses=ResponseSelector,
+                constructor_name="load",
+                fn="process",
+                config={"epochs": 100, "constrain_similarities": True},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_ResponseSelector7"),
+            ),
+            "run_FallbackClassifier8": SchemaNode(
+                needs={"messages": "run_ResponseSelector7",},
+                uses=FallbackClassifier,
+                constructor_name="create",
+                fn="process",
+                config={"threshold": 0.3, "ambiguity_threshold": 0.1},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            "run_RegexClassifier": SchemaNode(
+                needs={"messages": "run_FallbackClassifier8",},
+                uses=RegexClassifier,
+                constructor_name="create",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            # Core
+            "nlu_prediction_to_history_adder": SchemaNode(
+                needs={"messages": "run_RegexClassifier",},
+                uses=NLUPredictionToHistoryAdder,
+                constructor_name="create",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            "domain_provider": SchemaNode(
+                needs={},
+                uses=DomainProvider,
+                constructor_name="load",
+                fn="provide_persisted",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("domain_provider"),
+            ),
+            # End-to-end
+            "tracker_to_message_converter": SchemaNode(
+                needs={"tracker": "nlu_prediction_to_history_adder"},
+                uses=TrackerToMessageConverter,
+                constructor_name="create",
+                fn="convert",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+            ),
+            "e2e_run_WhitespaceTokenizer0": SchemaNode(
+                needs={"messages": "tracker_to_message_converter"},
+                uses=WhitespaceTokenizer,
+                constructor_name="create",
+                fn="process",
+                config={},
+                eager=True,
+                resource=None,
+            ),
+            "e2e_run_RegexFeaturizer1": SchemaNode(
+                needs={"messages": "e2e_run_WhitespaceTokenizer0",},
+                uses=RegexFeaturizer,
+                constructor_name="load",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_RegexFeaturizer1"),
+            ),
+            "e2e_run_LexicalSyntacticFeaturizer2": SchemaNode(
+                needs={"messages": "e2e_run_RegexFeaturizer1"},
+                uses=LexicalSyntacticFeaturizer,
+                constructor_name="create",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            "e2e_run_CountVectorsFeaturizer3": SchemaNode(
+                needs={"messages": "e2e_run_LexicalSyntacticFeaturizer2",},
+                uses=CountVectorsFeaturizer,
+                constructor_name="load",
+                fn="process",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_CountVectorsFeaturizer3"),
+            ),
+            "e2e_run_CountVectorsFeaturizer4": SchemaNode(
+                needs={"messages": "e2e_run_CountVectorsFeaturizer3",},
+                uses=CountVectorsFeaturizer,
+                constructor_name="load",
+                fn="process",
+                config={"analyzer": "char_wb", "min_ngram": 1, "max_ngram": 4},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_CountVectorsFeaturizer4"),
+            ),
+            "end_to_end_features_provider": SchemaNode(
+                needs={"messages": "e2e_run_CountVectorsFeaturizer4",},
+                uses=EndToEndFeaturesProvider,
+                constructor_name="create",
+                fn="provide_inference",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+            # Policies
+            "run_MemoizationPolicy0": SchemaNode(
+                needs={
+                    "tracker": "nlu_prediction_to_history_adder",
+                    "domain": "domain_provider",
+                },
+                uses=MemoizationPolicy,
+                constructor_name="load",
+                fn="predict_action_probabilities",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_MemoizationPolicy0"),
+            ),
+            "run_RulePolicy1": SchemaNode(
+                needs={
+                    "tracker": "nlu_prediction_to_history_adder",
+                    "domain": "domain_provider",
+                },
+                uses=RulePolicy,
+                constructor_name="load",
+                fn="predict_action_probabilities",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_RulePolicy1"),
+            ),
+            "run_UnexpecTEDIntentPolicy2": SchemaNode(
+                needs={
+                    "tracker": "nlu_prediction_to_history_adder",
+                    "domain": "domain_provider",
+                    "end_to_end_features": "end_to_end_features_provider",
+                },
+                uses=UnexpecTEDIntentPolicy,
+                constructor_name="load",
+                fn="predict_action_probabilities",
+                config={"epochs": 100, "max_history": 5},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_UnexpecTEDIntentPolicy2"),
+            ),
+            "run_TEDPolicy3": SchemaNode(
+                needs={
+                    "tracker": "nlu_prediction_to_history_adder",
+                    "domain": "domain_provider",
+                    "end_to_end_features": "end_to_end_features_provider",
+                },
+                uses=TEDPolicy,
+                constructor_name="load",
+                fn="predict_action_probabilities",
+                config={
+                    "epochs": 100,
+                    "max_history": 5,
+                    "constrain_similarities": True,
+                },
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=Resource("train_TEDPolicy3"),
+            ),
+            "select_prediction": SchemaNode(
+                needs={
+                    "policy0": "run_MemoizationPolicy0",
+                    "policy1": "run_RulePolicy1",
+                    "policy2": "run_UnexpecTEDIntentPolicy2",
+                    "policy3": "run_TEDPolicy3",
+                },
+                uses=SimplePolicyEnsemble,
+                constructor_name="create",
+                fn="select",
+                config={},
+                eager=True,
+                is_target=False,
+                is_input=False,
+                resource=None,
+            ),
+        }
+    )
+
+    config = rasa.shared.utils.io.read_yaml_file(
+        "rasa/shared/importers/default_config.yml"
+    )
+    recipe = Recipe.recipe_for_name(DefaultV1Recipe.name)
+    _, predict_schema = recipe.schemas_for_config(config, {})
+
+    for node_name, node in expected_predict_schema.nodes.items():
+        assert predict_schema.nodes[node_name] == node
+
+    assert predict_schema == expected_predict_schema

@@ -102,6 +102,8 @@ trainable_classifiers = [
     ResponseSelector,
 ]
 
+trainable_extractors = [CRFEntityExtractor, RegexEntityExtractor]
+
 
 class DefaultV1Recipe(Recipe):
     name = "default.v1"
@@ -176,6 +178,7 @@ class DefaultV1Recipe(Recipe):
             component_name = item.pop("name")
             component = rasa.nlu.registry.get_component_class(component_name)
             component_name = f"{component.__name__}{idx}"
+
             if issubclass(component, Tokenizer):
                 last_run_node = tokenizer = self._add_nlu_process_node(
                     train_nodes, component, component_name, last_run_node, item
@@ -195,6 +198,7 @@ class DefaultV1Recipe(Recipe):
                     item,
                     from_resource=from_resource,
                 )
+
                 # Remember for End-to-End-Featurization
                 featurizers.append(last_run_node)
             elif issubclass(component, IntentClassifier):
@@ -206,7 +210,6 @@ class DefaultV1Recipe(Recipe):
                     # We don't need non trainable classifiers
                     continue
             elif issubclass(component, EntityExtractor):
-                trainable_extractors = [CRFEntityExtractor, RegexEntityExtractor]
                 if component in trainable_extractors:
                     # TODO: implement
                     pass
@@ -402,94 +405,111 @@ class DefaultV1Recipe(Recipe):
             config={},
             eager=True,
         )
+
         last_run_node = "nlu_message_converter"
         idx = 0
+
         for item in predict_config["pipeline"]:
             component_name = item.pop("name")
             component = rasa.nlu.registry.get_component_class(component_name)
+            component_name = f"{component.__name__}{idx}"
             if issubclass(component, Tokenizer):
-                node_name = f"run_{component.__name__}{idx}"
-                predict_nodes[node_name] = dataclasses.replace(
-                    train_nodes[node_name],
-                    needs={"messages": last_run_node},
-                    fn="process",
-                    eager=True,
+                last_run_node = self._add_nlu_predict_node_from_train(
+                    predict_nodes, component_name, train_nodes, last_run_node
                 )
-                last_run_node = node_name
             elif issubclass(component, Featurizer):
-                node_name = f"run_{component.__name__}{idx}"
-
-                if component in pretrained_featurizers:
-                    predict_nodes[node_name] = dataclasses.replace(
-                        train_nodes[node_name],
-                        needs={"messages": last_run_node},
-                        fn="process",
-                        eager=True,
-                        is_target=False,
-                    )
-                else:
-                    predict_nodes[node_name] = dataclasses.replace(
-                        train_nodes[node_name],
-                        needs={"messages": last_run_node},
-                        fn="process",
-                        eager=True,
-                        resource=Resource(f"train_{component.__name__}{idx}"),
-                    )
-                last_run_node = node_name
+                last_run_node = self._add_nlu_predict_node_from_train(
+                    predict_nodes,
+                    component_name,
+                    train_nodes,
+                    last_run_node,
+                    from_resource=component not in pretrained_featurizers,
+                )
             elif issubclass(component, IntentClassifier):
                 if component in trainable_classifiers:
-                    train_node_name = f"train_{component.__name__}{idx}"
-                    node_name = f"run_{component.__name__}{idx}"
-                    predict_nodes[node_name] = dataclasses.replace(
-                        train_nodes[train_node_name],
-                        needs={"messages": last_run_node},
-                        constructor_name="load",
-                        fn="process",
-                        eager=True,
-                        is_target=False,
-                        resource=Resource(train_node_name),
+                    last_run_node = self._add_nlu_predict_node_from_train(
+                        predict_nodes,
+                        component_name,
+                        train_nodes,
+                        last_run_node,
+                        from_resource=component in trainable_classifiers,
                     )
                 else:
-                    node_name = f"run_{component.__name__}{idx}"
-                    predict_nodes[node_name] = SchemaNode(
+                    new_node = SchemaNode(
                         needs={"messages": last_run_node},
                         uses=component,
                         constructor_name="create",
                         fn="process",
                         config=item,
-                        eager=True,
                     )
-                last_run_node = node_name
+
+                    last_run_node = self._add_nlu_predict_node(
+                        predict_nodes, new_node, component_name, last_run_node
+                    )
 
             elif issubclass(component, EntityExtractor) and not issubclass(
                 component, IntentClassifier
             ):
-                trainable_extractors = [CRFEntityExtractor, RegexEntityExtractor]
-                if component in trainable_extractors:
-                    # TODO: implement
-                    pass
-                else:
-                    node_name = f"run_{component.__name__}{idx}"
-                    predict_nodes[node_name] = dataclasses.replace(
-                        train_nodes[node_name],
-                        needs={"messages": last_run_node},
-                        uses=component,
-                        constructor_name="load",
-                        eager=True,
-                        fn="process",
-                    )
-                    last_run_node = node_name
+                last_run_node = self._add_nlu_predict_node_from_train(
+                    predict_nodes,
+                    component_name,
+                    train_nodes,
+                    last_run_node,
+                    from_resource=component in trainable_extractors,
+                )
 
             idx += 1
-        node_name = f"run_{RegexClassifier.__name__}"
-        predict_nodes[node_name] = SchemaNode(
+
+        new_node = SchemaNode(
             needs={"messages": last_run_node},
             uses=RegexClassifier,
-            constructor_name="create",
+            constructor_name="load",
             fn="process",
             config={},
-            eager=True,
         )
+
+        return self._add_nlu_predict_node(
+            predict_nodes, new_node, f"{RegexClassifier.__name__}", last_run_node
+        )
+
+    def _add_nlu_predict_node_from_train(
+        self,
+        predict_nodes: Dict[Text, SchemaNode],
+        node_name: Text,
+        train_nodes: Dict[Text, SchemaNode],
+        last_run_node: Text,
+        from_resource: bool = False,
+    ) -> Text:
+        train_node_name = f"run_{node_name}"
+        resource = None
+        if from_resource:
+            train_node_name = f"train_{node_name}"
+            resource = Resource(train_node_name)
+
+        return self._add_nlu_predict_node(
+            predict_nodes,
+            dataclasses.replace(train_nodes[train_node_name], resource=resource,),
+            node_name,
+            last_run_node,
+        )
+
+    def _add_nlu_predict_node(
+        self,
+        predict_nodes: Dict[Text, SchemaNode],
+        node: SchemaNode,
+        component_name: Text,
+        last_run_node: Text,
+    ) -> Text:
+        node_name = f"run_{component_name}"
+        predict_nodes[node_name] = dataclasses.replace(
+            node,
+            needs={"messages": last_run_node},
+            fn="process",
+            is_target=False,
+            eager=True,
+            constructor_name="load",
+        )
+
         return node_name
 
     def _add_core_predict_nodes(

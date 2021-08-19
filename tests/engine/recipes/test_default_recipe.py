@@ -539,7 +539,7 @@ def test_generate_predict_graph():
             "run_FallbackClassifier8": SchemaNode(
                 needs={"messages": "run_ResponseSelector7",},
                 uses=FallbackClassifier,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={"threshold": 0.3, "ambiguity_threshold": 0.1},
                 eager=True,
@@ -550,7 +550,7 @@ def test_generate_predict_graph():
             "run_RegexClassifier": SchemaNode(
                 needs={"messages": "run_FallbackClassifier8",},
                 uses=RegexClassifier,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={},
                 eager=True,

@@ -86,15 +86,21 @@ class TrackerToMessageConverter(GraphComponent):
     pass
 
 
-def _create_train(
-    component_class: Type,
-    config: Dict[Text, Any],
-    idx: int,
-    previous_node: Text,
-    last_feature_node: Optional[Text],
-) -> Tuple[Dict[Text, SchemaNode], Text, Optional[Text]]:
-    # TODO: Idea for refactoring stuff
-    pass
+pretrained_featurizers = [
+    LexicalSyntacticFeaturizer,
+    SpacyFeaturizer,
+    MitieFeaturizer,
+    LanguageModelFeaturizer,
+    ConveRTFeaturizer,
+]
+
+policies_with_e2e_support = [TEDPolicy, UnexpecTEDIntentPolicy]
+
+trainable_classifiers = [
+    DIETClassifier,
+    SklearnIntentClassifier,
+    ResponseSelector,
+]
 
 
 class DefaultV1Recipe(Recipe):
@@ -103,7 +109,17 @@ class DefaultV1Recipe(Recipe):
     def schemas_for_config(
         self, config: Dict, cli_parameters: Dict[Text, Any]
     ) -> Tuple[GraphSchema, GraphSchema]:
-        ###################################### Train Graph
+        train_nodes, featurizers, tokenizer = self._create_train_nodes(config)
+        predict_nodes = self._create_predict_nodes(
+            config, featurizers, tokenizer, train_nodes
+        )
+
+        return GraphSchema(train_nodes), GraphSchema(predict_nodes)
+
+    def _create_train_nodes(
+        self, config: Dict[Text, Any]
+    ) -> Tuple[Dict[Text, SchemaNode], List[Text], Optional[Text]]:
+        train_config = copy.deepcopy(config)
         train_nodes = {
             "project_provider": SchemaNode(
                 needs={},
@@ -127,102 +143,64 @@ class DefaultV1Recipe(Recipe):
                 fn="validate",
                 config={},
             ),
-            # This starts the NLU part of the graph
-            "nlu_training_data_provider": SchemaNode(
-                needs={"importer": "finetuning_validator"},
-                uses=NLUTrainingDataProvider,
-                constructor_name="create",
-                fn="provide",
-                config={},
-                # TODO: not always
-                is_target=True,
-                is_input=True,
-            ),
         }
+        featurizers, tokenizer = self._add_nlu_train_nodes(train_config, train_nodes)
+        self._add_core_train_nodes(train_config, train_nodes, tokenizer, featurizers)
 
+        return train_nodes, featurizers, tokenizer
+
+    def _add_nlu_train_nodes(
+        self, train_config: Dict[Text, Any], train_nodes: Dict[Text, SchemaNode]
+    ) -> Tuple[List[Text], Optional[Text]]:
         import rasa.nlu.registry
 
-        pretrained_featurizer = [
-            LexicalSyntacticFeaturizer,
-            SpacyFeaturizer,
-            MitieFeaturizer,
-            LanguageModelFeaturizer,
-            ConveRTFeaturizer,
-        ]
+        train_nodes["nlu_training_data_provider"] = SchemaNode(
+            needs={"importer": "finetuning_validator"},
+            uses=NLUTrainingDataProvider,
+            constructor_name="create",
+            fn="provide",
+            config={},
+            # TODO: not always
+            is_target=True,
+            is_input=True,
+        )
 
         last_run_node = "nlu_training_data_provider"
         last_feature_node = None
-
         tokenizer: Optional[Text] = None
         featurizers: List[Text] = []
-
         idx = 0
-        train_config = copy.deepcopy(config)
+
+        # TODO: Trainable vs non trainable NLU node?
         for item in train_config["pipeline"]:
             component_name = item.pop("name")
             component = rasa.nlu.registry.get_component_class(component_name)
+            component_name = f"{component.__name__}{idx}"
             if issubclass(component, Tokenizer):
-                node_name = f"run_{component.__name__}{idx}"
-                train_nodes[node_name] = SchemaNode(
-                    needs={"training_data": last_run_node},
-                    uses=component,
-                    constructor_name="create",
-                    fn="process_training_data",
-                    config=item,
+                last_run_node = tokenizer = self._add_nlu_process_node(
+                    train_nodes, component, component_name, last_run_node, item
                 )
-                last_run_node = tokenizer = node_name
             elif issubclass(component, Featurizer):
-
-                if component in pretrained_featurizer:
-                    node_name = f"run_{component.__name__}{idx}"
-                    train_nodes[node_name] = SchemaNode(
-                        needs={"training_data": last_run_node},
-                        uses=component,
-                        constructor_name="create",
-                        fn="process_training_data",
-                        config=item,
-                    )
-                    last_run_node = node_name
-                else:
-                    train_node_name = f"train_{component.__name__}{idx}"
-                    train_nodes[train_node_name] = SchemaNode(
-                        needs={"training_data": last_run_node},
-                        uses=component,
-                        constructor_name="create",
-                        fn="train",
-                        config=item,
-                        is_target=True,
+                from_resource = None
+                if component not in pretrained_featurizers:
+                    from_resource = self._add_nlu_train_node(
+                        train_nodes, component, component_name, last_run_node, item
                     )
 
-                    node_name = f"run_{component.__name__}{idx}"
-                    train_nodes[node_name] = SchemaNode(
-                        needs={
-                            "training_data": last_run_node,
-                            "resource": train_node_name,
-                        },
-                        uses=component,
-                        constructor_name="load",
-                        fn="process_training_data",
-                        config=item,
-                    )
-                    last_run_node = last_feature_node = node_name
+                last_run_node = last_feature_node = self._add_nlu_process_node(
+                    train_nodes,
+                    component,
+                    component_name,
+                    last_run_node,
+                    item,
+                    from_resource=from_resource,
+                )
                 # Remember for End-to-End-Featurization
                 featurizers.append(last_run_node)
             elif issubclass(component, IntentClassifier):
-                trainable_classifiers = [
-                    DIETClassifier,
-                    SklearnIntentClassifier,
-                    ResponseSelector,
-                ]
                 if component in trainable_classifiers:
-                    node_name = f"train_{component.__name__}{idx}"
-                    train_nodes[node_name] = SchemaNode(
-                        needs={"training_data": last_feature_node},
-                        uses=component,
-                        constructor_name="create",
-                        fn="train",
-                        config=item,
-                        is_target=True,
+                    _ = self._add_nlu_train_node(
+                        train_nodes, component, component_name, last_feature_node, item
                     )
                 else:
                     # We don't need non trainable classifiers
@@ -233,19 +211,63 @@ class DefaultV1Recipe(Recipe):
                     # TODO: implement
                     pass
                 else:
-                    node_name = f"run_{component.__name__}{idx}"
-                    train_nodes[node_name] = SchemaNode(
-                        needs={"training_data": last_run_node},
-                        uses=component,
-                        constructor_name="load",
-                        fn="process_training_data",
-                        config=item,
+                    last_run_node = self._add_nlu_process_node(
+                        train_nodes, component, component_name, last_run_node, item
                     )
-                    last_run_node = node_name
 
             idx += 1
 
-        # This starts the Core part of the graph
+        return featurizers, tokenizer
+
+    def _add_nlu_train_node(
+        self,
+        train_nodes: Dict[Text, SchemaNode],
+        component: Type[GraphComponent],
+        component_name: Text,
+        last_run_node: Text,
+        config: Dict[Text, Any],
+    ) -> Text:
+        train_node_name = f"train_{component_name}"
+        train_nodes[train_node_name] = SchemaNode(
+            needs={"training_data": last_run_node},
+            uses=component,
+            constructor_name="create",
+            fn="train",
+            config=config,
+            is_target=True,
+        )
+        return train_node_name
+
+    def _add_nlu_process_node(
+        self,
+        train_nodes: Dict[Text, SchemaNode],
+        component_class: Type[GraphComponent],
+        component_name: Text,
+        last_run_node: Text,
+        component_config: Dict[Text, Any],
+        from_resource: Optional[Text] = None,
+    ) -> Text:
+        resource_needs = {}
+        if from_resource:
+            resource_needs = {"resource": from_resource}
+
+        node_name = f"run_{component_name}"
+        train_nodes[node_name] = SchemaNode(
+            needs={"training_data": last_run_node, **resource_needs},
+            uses=component_class,
+            constructor_name="load",
+            fn="process_training_data",
+            config=component_config,
+        )
+        return node_name
+
+    def _add_core_train_nodes(
+        self,
+        train_config: Dict[Text, Any],
+        train_nodes: Dict[Text, SchemaNode],
+        tokenizer: Optional[Text],
+        featurizers: List[Text],
+    ) -> None:
         train_nodes["domain_provider"] = SchemaNode(
             needs={"importer": "finetuning_validator"},
             uses=DomainProvider,
@@ -281,7 +303,6 @@ class DefaultV1Recipe(Recipe):
             fn="provide",
             config={},
         )
-
         # End-to-End feature creation
         train_nodes["story_to_nlu_training_data_converter"] = SchemaNode(
             needs={
@@ -296,7 +317,6 @@ class DefaultV1Recipe(Recipe):
         )
         if tokenizer is None:
             raise ValueError("should not happen")
-
         train_nodes[f"e2e_{tokenizer}"] = dataclasses.replace(
             train_nodes[tokenizer],
             needs={"training_data": "story_to_nlu_training_data_converter"},
@@ -309,7 +329,6 @@ class DefaultV1Recipe(Recipe):
             node_name = f"e2e_{featurizer}"
             train_nodes[node_name] = node
             last_node_name = node_name
-
         node_with_e2e_features = "end_to_end_features_provider"
         train_nodes[node_with_e2e_features] = SchemaNode(
             needs={"training_data": last_node_name,},
@@ -318,12 +337,10 @@ class DefaultV1Recipe(Recipe):
             fn="provide",
             config={},
         )
-
         # Policies
         import rasa.core.registry
 
         idx = 0
-        policies_with_e2e_support = [TEDPolicy, UnexpecTEDIntentPolicy]
         for item in train_config["policies"]:
             component_name = item.pop("name")
             component = rasa.core.registry.policy_from_module_path(component_name)
@@ -346,20 +363,45 @@ class DefaultV1Recipe(Recipe):
                 config=item,
             )
             idx += 1
-        train_graph = GraphSchema(train_nodes)
 
-        ###################################### predict_graph
+    def _create_predict_nodes(
+        self,
+        config: Dict[Text, SchemaNode],
+        featurizers: List[Text],
+        tokenizer: Optional[Text],
+        train_nodes: Dict[Text, SchemaNode],
+    ) -> Dict[Text, SchemaNode]:
         predict_config = copy.deepcopy(config)
-        predict_nodes = {
-            "nlu_message_converter": SchemaNode(
-                needs={},
-                uses=NLUMessageConverter,
-                constructor_name="create",
-                fn="convert",
-                config={},
-                eager=True,
-            )
-        }
+        predict_nodes = {}
+        last_run_node = self._add_nlu_predict_nodes(
+            predict_config, predict_nodes, train_nodes
+        )
+        self._add_core_predict_nodes(
+            predict_config,
+            predict_nodes,
+            last_run_node,
+            train_nodes,
+            tokenizer,
+            featurizers,
+        )
+        return predict_nodes
+
+    def _add_nlu_predict_nodes(
+        self,
+        predict_config: Dict[Text, Any],
+        predict_nodes: Dict[Text, SchemaNode],
+        train_nodes: Dict[Text, SchemaNode],
+    ) -> Text:
+        import rasa.nlu.registry
+
+        predict_nodes["nlu_message_converter"] = SchemaNode(
+            needs={},
+            uses=NLUMessageConverter,
+            constructor_name="create",
+            fn="convert",
+            config={},
+            eager=True,
+        )
         last_run_node = "nlu_message_converter"
         idx = 0
         for item in predict_config["pipeline"]:
@@ -377,7 +419,7 @@ class DefaultV1Recipe(Recipe):
             elif issubclass(component, Featurizer):
                 node_name = f"run_{component.__name__}{idx}"
 
-                if component in pretrained_featurizer:
+                if component in pretrained_featurizers:
                     predict_nodes[node_name] = dataclasses.replace(
                         train_nodes[node_name],
                         needs={"messages": last_run_node},
@@ -395,11 +437,6 @@ class DefaultV1Recipe(Recipe):
                     )
                 last_run_node = node_name
             elif issubclass(component, IntentClassifier):
-                trainable_classifiers = [
-                    DIETClassifier,
-                    SklearnIntentClassifier,
-                    ResponseSelector,
-                ]
                 if component in trainable_classifiers:
                     train_node_name = f"train_{component.__name__}{idx}"
                     node_name = f"run_{component.__name__}{idx}"
@@ -444,7 +481,6 @@ class DefaultV1Recipe(Recipe):
                     last_run_node = node_name
 
             idx += 1
-
         node_name = f"run_{RegexClassifier.__name__}"
         predict_nodes[node_name] = SchemaNode(
             needs={"messages": last_run_node},
@@ -454,9 +490,19 @@ class DefaultV1Recipe(Recipe):
             config={},
             eager=True,
         )
-        last_run_node = node_name
+        return node_name
 
-        # Core predict graph
+    def _add_core_predict_nodes(
+        self,
+        predict_config: Dict[Text, Any],
+        predict_nodes: Dict[Text, SchemaNode],
+        last_run_node: Text,
+        train_nodes: Dict[Text, SchemaNode],
+        tokenizer: Optional[Text],
+        featurizers: List[Text],
+    ) -> None:
+        import rasa.core.registry
+
         predict_nodes["nlu_prediction_to_history_adder"] = SchemaNode(
             # TODO: I think there is a bug in our Dask Runner for this case as
             # the input will override `messages`
@@ -485,10 +531,8 @@ class DefaultV1Recipe(Recipe):
             config={},
             eager=True,
         )
-
         if tokenizer is None:
             raise ValueError("should not happen")
-
         predict_nodes[f"e2e_{tokenizer}"] = dataclasses.replace(
             predict_nodes[tokenizer],
             needs={"messages": "tracker_to_message_converter"},
@@ -502,7 +546,6 @@ class DefaultV1Recipe(Recipe):
             node_name = f"e2e_{featurizer}"
             predict_nodes[node_name] = node
             last_node_name = node_name
-
         node_with_e2e_features = "end_to_end_features_provider"
         predict_nodes[node_with_e2e_features] = SchemaNode(
             needs={"messages": last_node_name,},
@@ -512,7 +555,6 @@ class DefaultV1Recipe(Recipe):
             config={},
             eager=True,
         )
-
         # policies
         idx = 0
         policies: List[Text] = []
@@ -540,7 +582,6 @@ class DefaultV1Recipe(Recipe):
             )
             policies.append(node_name)
             idx += 1
-
         predict_nodes["select_prediction"] = SchemaNode(
             needs={f"policy{idx}": name for idx, name in enumerate(policies)},
             uses=SimplePolicyEnsemble,
@@ -549,5 +590,3 @@ class DefaultV1Recipe(Recipe):
             config={},
             eager=True,
         )
-
-        return train_graph, GraphSchema(predict_nodes)

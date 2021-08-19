@@ -95,7 +95,7 @@ def test_generate_train_graph():
             "run_WhitespaceTokenizer0": SchemaNode(
                 needs={"training_data": "nlu_training_data_provider"},
                 uses=WhitespaceTokenizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process_training_data",
                 config={},
                 eager=False,
@@ -131,7 +131,7 @@ def test_generate_train_graph():
             "run_LexicalSyntacticFeaturizer2": SchemaNode(
                 needs={"training_data": "run_RegexFeaturizer1"},
                 uses=LexicalSyntacticFeaturizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process_training_data",
                 config={},
                 eager=False,
@@ -288,7 +288,7 @@ def test_generate_train_graph():
             "e2e_run_WhitespaceTokenizer0": SchemaNode(
                 needs={"training_data": "story_to_nlu_training_data_converter"},
                 uses=WhitespaceTokenizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process_training_data",
                 config={},
                 eager=False,
@@ -313,7 +313,7 @@ def test_generate_train_graph():
             "e2e_run_LexicalSyntacticFeaturizer2": SchemaNode(
                 needs={"training_data": "e2e_run_RegexFeaturizer1"},
                 uses=LexicalSyntacticFeaturizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process_training_data",
                 config={},
                 eager=False,
@@ -453,7 +453,7 @@ def test_generate_predict_graph():
             "run_WhitespaceTokenizer0": SchemaNode(
                 needs={"messages": "nlu_message_converter"},
                 uses=WhitespaceTokenizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={},
                 eager=True,
@@ -473,7 +473,7 @@ def test_generate_predict_graph():
             "run_LexicalSyntacticFeaturizer2": SchemaNode(
                 needs={"messages": "run_RegexFeaturizer1"},
                 uses=LexicalSyntacticFeaturizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={},
                 eager=True,
@@ -595,7 +595,7 @@ def test_generate_predict_graph():
             "e2e_run_WhitespaceTokenizer0": SchemaNode(
                 needs={"messages": "tracker_to_message_converter"},
                 uses=WhitespaceTokenizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={},
                 eager=True,
@@ -615,7 +615,7 @@ def test_generate_predict_graph():
             "e2e_run_LexicalSyntacticFeaturizer2": SchemaNode(
                 needs={"messages": "e2e_run_RegexFeaturizer1"},
                 uses=LexicalSyntacticFeaturizer,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={},
                 eager=True,

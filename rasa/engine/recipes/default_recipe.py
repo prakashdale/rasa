@@ -104,6 +104,8 @@ trainable_classifiers = [
 
 trainable_extractors = [CRFEntityExtractor, RegexEntityExtractor]
 
+default_predict_kwargs = dict(constructor_name="load", eager=True, is_target=False,)
+
 
 class DefaultV1Recipe(Recipe):
     name = "default.v1"
@@ -171,10 +173,8 @@ class DefaultV1Recipe(Recipe):
         last_feature_node = None
         tokenizer: Optional[Text] = None
         featurizers: List[Text] = []
-        idx = 0
 
-        # TODO: Trainable vs non trainable NLU node?
-        for item in train_config["pipeline"]:
+        for idx, item in enumerate(train_config["pipeline"]):
             component_name = item.pop("name")
             component = rasa.nlu.registry.get_component_class(component_name)
             component_name = f"{component.__name__}{idx}"
@@ -217,8 +217,6 @@ class DefaultV1Recipe(Recipe):
                     last_run_node = self._add_nlu_process_node(
                         train_nodes, component, component_name, last_run_node, item
                     )
-
-            idx += 1
 
         return featurizers, tokenizer
 
@@ -306,7 +304,40 @@ class DefaultV1Recipe(Recipe):
             fn="provide",
             config={},
         )
-        # End-to-End feature creation
+
+        node_with_e2e_features = self._add_end_to_end_features_for_training(
+            featurizers, tokenizer, train_nodes
+        )
+
+        import rasa.core.registry
+
+        for idx, item in enumerate(train_config["policies"]):
+            component_name = item.pop("name")
+            component = rasa.core.registry.policy_from_module_path(component_name)
+
+            train_nodes[f"train_{component.__name__}{idx}"] = SchemaNode(
+                needs={
+                    "training_trackers": "training_tracker_provider",
+                    "domain": "domain_without_responses_provider",
+                    **(
+                        {"end_to_end_features": node_with_e2e_features}
+                        if component in policies_with_e2e_support
+                        else {}
+                    ),
+                },
+                uses=component,
+                constructor_name="create",
+                fn="train",
+                is_target=True,
+                config=item,
+            )
+
+    def _add_end_to_end_features_for_training(
+        self,
+        featurizers: List[Text],
+        tokenizer: Text,
+        train_nodes: Dict[Text, SchemaNode],
+    ) -> Text:
         train_nodes["story_to_nlu_training_data_converter"] = SchemaNode(
             needs={
                 "story_graph": "story_graph_provider",
@@ -318,12 +349,12 @@ class DefaultV1Recipe(Recipe):
             config={},
             is_input=True,
         )
-        if tokenizer is None:
-            raise ValueError("should not happen")
+
         train_nodes[f"e2e_{tokenizer}"] = dataclasses.replace(
             train_nodes[tokenizer],
             needs={"training_data": "story_to_nlu_training_data_converter"},
         )
+
         last_node_name = f"e2e_{tokenizer}"
         for featurizer in featurizers:
             node = copy.deepcopy(train_nodes[featurizer])
@@ -332,6 +363,7 @@ class DefaultV1Recipe(Recipe):
             node_name = f"e2e_{featurizer}"
             train_nodes[node_name] = node
             last_node_name = node_name
+
         node_with_e2e_features = "end_to_end_features_provider"
         train_nodes[node_with_e2e_features] = SchemaNode(
             needs={"training_data": last_node_name,},
@@ -340,32 +372,8 @@ class DefaultV1Recipe(Recipe):
             fn="provide",
             config={},
         )
-        # Policies
-        import rasa.core.registry
 
-        idx = 0
-        for item in train_config["policies"]:
-            component_name = item.pop("name")
-            component = rasa.core.registry.policy_from_module_path(component_name)
-
-            node_name = f"train_{component.__name__}{idx}"
-
-            e2e_needs = {}
-            if component in policies_with_e2e_support:
-                e2e_needs = {"end_to_end_features": node_with_e2e_features}
-            train_nodes[node_name] = SchemaNode(
-                needs={
-                    "training_trackers": "training_tracker_provider",
-                    "domain": "domain_without_responses_provider",
-                    **e2e_needs,
-                },
-                uses=component,
-                constructor_name="create",
-                fn="train",
-                is_target=True,
-                config=item,
-            )
-            idx += 1
+        return node_with_e2e_features
 
     def _create_predict_nodes(
         self,
@@ -398,18 +406,16 @@ class DefaultV1Recipe(Recipe):
         import rasa.nlu.registry
 
         predict_nodes["nlu_message_converter"] = SchemaNode(
+            **default_predict_kwargs,
             needs={},
             uses=NLUMessageConverter,
-            constructor_name="create",
             fn="convert",
             config={},
-            eager=True,
         )
 
         last_run_node = "nlu_message_converter"
-        idx = 0
 
-        for item in predict_config["pipeline"]:
+        for idx, item in enumerate(predict_config["pipeline"]):
             component_name = item.pop("name")
             component = rasa.nlu.registry.get_component_class(component_name)
             component_name = f"{component.__name__}{idx}"
@@ -458,8 +464,6 @@ class DefaultV1Recipe(Recipe):
                     from_resource=component in trainable_extractors,
                 )
 
-            idx += 1
-
         new_node = SchemaNode(
             needs={"messages": last_run_node},
             uses=RegexClassifier,
@@ -505,9 +509,7 @@ class DefaultV1Recipe(Recipe):
             node,
             needs={"messages": last_run_node},
             fn="process",
-            is_target=False,
-            eager=True,
-            constructor_name="load",
+            **default_predict_kwargs,
         )
 
         return node_name
@@ -524,35 +526,72 @@ class DefaultV1Recipe(Recipe):
         import rasa.core.registry
 
         predict_nodes["nlu_prediction_to_history_adder"] = SchemaNode(
+            **default_predict_kwargs,
             # TODO: I think there is a bug in our Dask Runner for this case as
             # the input will override `messages`
             needs={"messages": last_run_node},
             uses=NLUPredictionToHistoryAdder,
-            constructor_name="create",
             fn="process",
             config={},
-            eager=True,
         )
         predict_nodes["domain_provider"] = SchemaNode(
+            **default_predict_kwargs,
             needs={},
             uses=DomainProvider,
-            constructor_name="load",
             fn="provide_persisted",
             config={},
-            eager=True,
             resource=Resource("domain_provider"),
         )
-        # End-to-end feature creation
+
+        node_with_e2e_features = self._add_end_to_end_features_for_inference(
+            predict_nodes, tokenizer, featurizers
+        )
+
+        policies: List[Text] = []
+        for idx, item in enumerate(predict_config["policies"]):
+            component_name = item.pop("name")
+            component = rasa.core.registry.policy_from_module_path(component_name)
+            train_node_name = f"train_{component.__name__}{idx}"
+            node_name = f"run_{component.__name__}{idx}"
+
+            predict_nodes[node_name] = dataclasses.replace(
+                train_nodes[train_node_name],
+                **default_predict_kwargs,
+                needs={
+                    "tracker": "nlu_prediction_to_history_adder",
+                    "domain": "domain_provider",
+                    **(
+                        {"end_to_end_features": node_with_e2e_features}
+                        if component in policies_with_e2e_support
+                        else {}
+                    ),
+                },
+                fn="predict_action_probabilities",
+                resource=Resource(train_node_name),
+            )
+            policies.append(node_name)
+
+        predict_nodes["select_prediction"] = SchemaNode(
+            **default_predict_kwargs,
+            needs={f"policy{idx}": name for idx, name in enumerate(policies)},
+            uses=SimplePolicyEnsemble,
+            fn="select",
+            config={},
+        )
+
+    def _add_end_to_end_features_for_inference(
+        self,
+        predict_nodes: Dict[Text, SchemaNode],
+        tokenizer: Text,
+        featurizers: List[Text],
+    ) -> Text:
         predict_nodes["tracker_to_message_converter"] = SchemaNode(
+            **default_predict_kwargs,
             needs={"tracker": "nlu_prediction_to_history_adder"},
             uses=TrackerToMessageConverter,
-            constructor_name="create",
             fn="convert",
             config={},
-            eager=True,
         )
-        if tokenizer is None:
-            raise ValueError("should not happen")
         predict_nodes[f"e2e_{tokenizer}"] = dataclasses.replace(
             predict_nodes[tokenizer],
             needs={"messages": "tracker_to_message_converter"},
@@ -566,47 +605,13 @@ class DefaultV1Recipe(Recipe):
             node_name = f"e2e_{featurizer}"
             predict_nodes[node_name] = node
             last_node_name = node_name
+
         node_with_e2e_features = "end_to_end_features_provider"
         predict_nodes[node_with_e2e_features] = SchemaNode(
+            **default_predict_kwargs,
             needs={"messages": last_node_name,},
             uses=EndToEndFeaturesProvider,
-            constructor_name="create",
             fn="provide_inference",
             config={},
-            eager=True,
         )
-        # policies
-        idx = 0
-        policies: List[Text] = []
-        for item in predict_config["policies"]:
-            component_name = item.pop("name")
-            component = rasa.core.registry.policy_from_module_path(component_name)
-
-            train_node_name = f"train_{component.__name__}{idx}"
-            node_name = f"run_{component.__name__}{idx}"
-            e2e_needs = {}
-            if component in policies_with_e2e_support:
-                e2e_needs = {"end_to_end_features": node_with_e2e_features}
-            predict_nodes[node_name] = dataclasses.replace(
-                train_nodes[train_node_name],
-                needs={
-                    "tracker": "nlu_prediction_to_history_adder",
-                    "domain": "domain_provider",
-                    **e2e_needs,
-                },
-                constructor_name="load",
-                fn="predict_action_probabilities",
-                eager=True,
-                is_target=False,
-                resource=Resource(train_node_name),
-            )
-            policies.append(node_name)
-            idx += 1
-        predict_nodes["select_prediction"] = SchemaNode(
-            needs={f"policy{idx}": name for idx, name in enumerate(policies)},
-            uses=SimplePolicyEnsemble,
-            constructor_name="create",
-            fn="select",
-            config={},
-            eager=True,
-        )
+        return node_with_e2e_features

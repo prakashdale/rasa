@@ -444,7 +444,7 @@ def test_generate_predict_graph():
             "nlu_message_converter": SchemaNode(
                 needs={},
                 uses=NLUMessageConverter,
-                constructor_name="create",
+                constructor_name="load",
                 fn="convert",
                 config={},
                 eager=True,
@@ -562,7 +562,7 @@ def test_generate_predict_graph():
             "nlu_prediction_to_history_adder": SchemaNode(
                 needs={"messages": "run_RegexClassifier",},
                 uses=NLUPredictionToHistoryAdder,
-                constructor_name="create",
+                constructor_name="load",
                 fn="process",
                 config={},
                 eager=True,
@@ -585,7 +585,7 @@ def test_generate_predict_graph():
             "tracker_to_message_converter": SchemaNode(
                 needs={"tracker": "nlu_prediction_to_history_adder"},
                 uses=TrackerToMessageConverter,
-                constructor_name="create",
+                constructor_name="load",
                 fn="convert",
                 config={},
                 eager=True,
@@ -648,7 +648,7 @@ def test_generate_predict_graph():
             "end_to_end_features_provider": SchemaNode(
                 needs={"messages": "e2e_run_CountVectorsFeaturizer4",},
                 uses=EndToEndFeaturesProvider,
-                constructor_name="create",
+                constructor_name="load",
                 fn="provide_inference",
                 config={},
                 eager=True,
@@ -727,7 +727,7 @@ def test_generate_predict_graph():
                     "policy3": "run_TEDPolicy3",
                 },
                 uses=SimplePolicyEnsemble,
-                constructor_name="create",
+                constructor_name="load",
                 fn="select",
                 config={},
                 eager=True,

@@ -34,7 +34,6 @@ class TrainingDataImporter:
     async def get_stories(
         self,
         template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
         """Retrieves the stories that should be used for training.
@@ -42,13 +41,11 @@ class TrainingDataImporter:
         Args:
             template_variables: Values of templates that should be replaced while
                                 reading the story files.
-            use_e2e: Specifies whether to parse end to end learning annotations.
             exclusion_percentage: Amount of training data that should be excluded.
 
         Returns:
             `StoryGraph` containing all loaded stories.
         """
-        # TODO(alwx): Drop `use_e2e` in Rasa Open Source 3.0.0 when removing Markdown support
         raise NotImplementedError()
 
     async def get_conversation_tests(self) -> StoryGraph:
@@ -57,7 +54,7 @@ class TrainingDataImporter:
         Returns:
             `StoryGraph` containing all loaded stories.
         """
-        return await self.get_stories(use_e2e=True)
+        return await self.get_stories()
 
     async def get_config(self) -> Dict:
         """Retrieves the configuration that should be used for the training.
@@ -210,7 +207,6 @@ class NluDataImporter(TrainingDataImporter):
     async def get_stories(
         self,
         template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
         """Retrieves training stories / rules (see parent class for full docstring)."""
@@ -261,12 +257,11 @@ class CombinedDataImporter(TrainingDataImporter):
     async def get_stories(
         self,
         template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
         """Retrieves training stories / rules (see parent class for full docstring)."""
         stories = [
-            importer.get_stories(template_variables, use_e2e, exclusion_percentage)
+            importer.get_stories(template_variables, exclusion_percentage)
             for importer in self._importers
         ]
         stories = await asyncio.gather(*stories)
@@ -392,12 +387,11 @@ class ResponsesSyncImporter(TrainingDataImporter):
     async def get_stories(
         self,
         template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
         """Retrieves training stories / rules (see parent class for full docstring)."""
         return await self._importer.get_stories(
-            template_variables, use_e2e, exclusion_percentage
+            template_variables, exclusion_percentage
         )
 
     async def get_conversation_tests(self) -> StoryGraph:
@@ -480,7 +474,6 @@ class E2EImporter(TrainingDataImporter):
         self,
         interpreter: "NaturalLanguageInterpreter" = RegexInterpreter(),
         template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
         """Retrieves the stories that should be used for training.
@@ -488,7 +481,7 @@ class E2EImporter(TrainingDataImporter):
         See parent class for details.
         """
         return await self.importer.get_stories(
-            template_variables, use_e2e, exclusion_percentage
+            template_variables, exclusion_percentage
         )
 
     async def get_conversation_tests(self) -> StoryGraph:

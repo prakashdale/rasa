@@ -16,13 +16,12 @@ async def story_graph_from_paths(
     files: List[Text],
     domain: Domain,
     template_variables: Optional[Dict] = None,
-    use_e2e: bool = False,
     exclusion_percentage: Optional[int] = None,
 ) -> StoryGraph:
 
     from rasa.shared.core.training_data import loading
 
     story_steps = await loading.load_data_from_files(
-        files, domain, template_variables, use_e2e, exclusion_percentage
+        files, domain, template_variables, exclusion_percentage
     )
     return StoryGraph(story_steps)

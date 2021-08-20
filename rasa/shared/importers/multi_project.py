@@ -178,7 +178,6 @@ class MultiProjectImporter(TrainingDataImporter):
     async def get_stories(
         self,
         template_variables: Optional[Dict] = None,
-        use_e2e: bool = False,
         exclusion_percentage: Optional[int] = None,
     ) -> StoryGraph:
         """Retrieves training stories / rules (see parent class for full docstring)."""
@@ -186,14 +185,13 @@ class MultiProjectImporter(TrainingDataImporter):
             self._story_paths,
             await self.get_domain(),
             template_variables,
-            use_e2e,
             exclusion_percentage,
         )
 
     async def get_conversation_tests(self) -> StoryGraph:
         """Retrieves conversation test stories (see parent class for full docstring)."""
         return await utils.story_graph_from_paths(
-            self._e2e_story_paths, await self.get_domain(), use_e2e=True,
+            self._e2e_story_paths, await self.get_domain()
         )
 
     async def get_config(self) -> Dict:

@@ -281,7 +281,7 @@ async def test_early_exit_on_invalid_domain():
 async def test_verify_there_is_not_example_repetition_in_intents():
     importer = RasaFileImporter(
         domain_path="data/test_moodbot/domain.yml",
-        training_data_paths=["examples/knowledgebasebot/data/nlu.md"],
+        training_data_paths=["examples/knowledgebasebot/data/nlu.yml"],
     )
     validator = await Validator.from_importer(importer)
     assert validator.verify_example_repetition_in_intents(False)

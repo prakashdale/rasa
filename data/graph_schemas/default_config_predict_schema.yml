@@ -93,7 +93,8 @@ run_EntitySynonymMapper6:
   eager: true
   is_target: false
   is_input: false
-  resource: null
+  resource:
+    name: train_EntitySynonymMapper6
 run_ResponseSelector7:
   needs:
     messages: run_EntitySynonymMapper6

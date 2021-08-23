@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Dict, Text, Any, Tuple, Type, Optional, List
 
 import dataclasses
@@ -16,8 +17,11 @@ from rasa.nlu.classifiers.classifier import IntentClassifier
 from rasa.nlu.classifiers.diet_classifier import DIETClassifier
 from rasa.nlu.classifiers.sklearn_intent_classifier import SklearnIntentClassifier
 from rasa.nlu.extractors.crf_entity_extractor import CRFEntityExtractor
+from rasa.nlu.extractors.entity_synonyms import EntitySynonymMapper
 from rasa.nlu.extractors.extractor import EntityExtractor
+from rasa.nlu.extractors.mitie_entity_extractor import MitieEntityExtractor
 from rasa.nlu.extractors.regex_entity_extractor import RegexEntityExtractor
+from rasa.nlu.extractors.spacy_entity_extractor import SpacyEntityExtractor
 from rasa.nlu.featurizers.dense_featurizer.convert_featurizer import ConveRTFeaturizer
 from rasa.nlu.featurizers.dense_featurizer.lm_featurizer import LanguageModelFeaturizer
 from rasa.nlu.featurizers.dense_featurizer.mitie_featurizer import MitieFeaturizer
@@ -28,6 +32,10 @@ from rasa.nlu.featurizers.sparse_featurizer.lexical_syntactic_featurizer import 
 )
 from rasa.nlu.selectors.response_selector import ResponseSelector
 from rasa.nlu.tokenizers.tokenizer import Tokenizer
+from rasa.nlu.utils.mitie_utils import MitieNLP
+from rasa.nlu.utils.spacy_utils import SpacyNLP
+
+logger = logging.getLogger(__name__)
 
 # TODO: Remove once they are implemented
 class ProjectProvider(GraphComponent):
@@ -102,7 +110,12 @@ trainable_classifiers = [
     ResponseSelector,
 ]
 
-trainable_extractors = [CRFEntityExtractor, RegexEntityExtractor]
+trainable_extractors = [
+    CRFEntityExtractor,
+    RegexEntityExtractor,
+    MitieEntityExtractor,
+    EntitySynonymMapper,
+]
 
 default_predict_kwargs = dict(constructor_name="load", eager=True, is_target=False,)
 
@@ -113,6 +126,8 @@ class DefaultV1Recipe(Recipe):
     def schemas_for_config(
         self, config: Dict, cli_parameters: Dict[Text, Any]
     ) -> Tuple[GraphSchema, GraphSchema]:
+        self._use_core = bool(config.get("policies"))
+
         train_nodes, featurizers, tokenizer = self._create_train_nodes(config)
         predict_nodes = self._create_predict_nodes(
             config, featurizers, tokenizer, train_nodes
@@ -149,7 +164,11 @@ class DefaultV1Recipe(Recipe):
             ),
         }
         featurizers, tokenizer = self._add_nlu_train_nodes(train_config, train_nodes)
-        self._add_core_train_nodes(train_config, train_nodes, tokenizer, featurizers)
+
+        if self._use_core:
+            self._add_core_train_nodes(
+                train_config, train_nodes, tokenizer, featurizers
+            )
 
         return train_nodes, featurizers, tokenizer
 
@@ -209,14 +228,23 @@ class DefaultV1Recipe(Recipe):
                 else:
                     # We don't need non trainable classifiers
                     continue
-            elif issubclass(component, EntityExtractor):
-                if component in trainable_extractors:
-                    # TODO: implement
-                    pass
-                else:
-                    last_run_node = self._add_nlu_process_node(
-                        train_nodes, component, component_name, last_run_node, item
-                    )
+            elif (
+                issubclass(component, EntityExtractor)
+                and component in trainable_extractors
+            ):
+                from_resource = None
+                # if component in trainable_extractors:
+                from_resource = self._add_nlu_train_node(
+                    train_nodes, component, component_name, last_run_node, item
+                )
+                last_run_node = self._add_nlu_process_node(
+                    train_nodes,
+                    component,
+                    component_name,
+                    last_run_node,
+                    item,
+                    from_resource=from_resource,
+                )
 
         return featurizers, tokenizer
 
@@ -382,19 +410,23 @@ class DefaultV1Recipe(Recipe):
         tokenizer: Optional[Text],
         train_nodes: Dict[Text, SchemaNode],
     ) -> Dict[Text, SchemaNode]:
+
         predict_config = copy.deepcopy(config)
         predict_nodes = {}
         last_run_node = self._add_nlu_predict_nodes(
             predict_config, predict_nodes, train_nodes
         )
-        self._add_core_predict_nodes(
-            predict_config,
-            predict_nodes,
-            last_run_node,
-            train_nodes,
-            tokenizer,
-            featurizers,
-        )
+
+        if self._use_core:
+            self._add_core_predict_nodes(
+                predict_config,
+                predict_nodes,
+                last_run_node,
+                train_nodes,
+                tokenizer,
+                featurizers,
+            )
+
         return predict_nodes
 
     def _add_nlu_predict_nodes(
@@ -419,7 +451,9 @@ class DefaultV1Recipe(Recipe):
             component_name = item.pop("name")
             component = rasa.nlu.registry.get_component_class(component_name)
             component_name = f"{component.__name__}{idx}"
-            if issubclass(component, Tokenizer):
+            if issubclass(component, (SpacyNLP, MitieNLP)):
+                pass
+            elif issubclass(component, Tokenizer):
                 last_run_node = self._add_nlu_predict_node_from_train(
                     predict_nodes, component_name, train_nodes, last_run_node
                 )
@@ -456,13 +490,26 @@ class DefaultV1Recipe(Recipe):
             elif issubclass(component, EntityExtractor) and not issubclass(
                 component, IntentClassifier
             ):
-                last_run_node = self._add_nlu_predict_node_from_train(
-                    predict_nodes,
-                    component_name,
-                    train_nodes,
-                    last_run_node,
-                    from_resource=component in trainable_extractors,
-                )
+                if component in trainable_extractors:
+                    last_run_node = self._add_nlu_predict_node_from_train(
+                        predict_nodes,
+                        component_name,
+                        train_nodes,
+                        last_run_node,
+                        from_resource=component in trainable_extractors,
+                    )
+                else:
+                    new_node = SchemaNode(
+                        needs={"messages": last_run_node},
+                        uses=component,
+                        constructor_name="create",
+                        fn="process",
+                        config=item,
+                    )
+
+                    last_run_node = self._add_nlu_predict_node(
+                        predict_nodes, new_node, component_name, last_run_node
+                    )
 
         new_node = SchemaNode(
             needs={"messages": last_run_node},

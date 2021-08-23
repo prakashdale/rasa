@@ -151,9 +151,21 @@ train_DIETClassifier5:
   is_target: true
   is_input: false
   resource: null
+train_EntitySynonymMapper6:
+  needs:
+    training_data: run_CountVectorsFeaturizer4
+  uses: rasa.nlu.extractors.entity_synonyms.EntitySynonymMapper
+  constructor_name: create
+  fn: train
+  config: {}
+  eager: false
+  is_target: true
+  is_input: false
+  resource: null
 run_EntitySynonymMapper6:
   needs:
     training_data: run_CountVectorsFeaturizer4
+    resource: train_EntitySynonymMapper6
   uses: rasa.nlu.extractors.entity_synonyms.EntitySynonymMapper
   constructor_name: load
   fn: process_training_data
@@ -337,8 +349,8 @@ train_UnexpecTEDIntentPolicy2:
   constructor_name: create
   fn: train
   config:
-    epochs: 100
     max_history: 5
+    epochs: 100
   eager: false
   is_target: true
   is_input: false
@@ -352,8 +364,8 @@ train_TEDPolicy3:
   constructor_name: create
   fn: train
   config:
-    epochs: 100
     max_history: 5
+    epochs: 100
     constrain_similarities: true
   eager: false
   is_target: true

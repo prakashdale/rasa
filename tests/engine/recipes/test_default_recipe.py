@@ -20,7 +20,14 @@ def test_recipe_for_name():
             "rasa/shared/importers/default_config.yml",
             "data/graph_schemas/default_config_train_schema.yml",
             "data/graph_schemas/default_config_predict_schema.yml",
-        )
+        ),
+        (
+            "data/test_config/config_pretrained_embeddings_spacy_duckling.yml",
+            "data/graph_schemas/"
+            "config_pretrained_embeddings_spacy_duckling_train_schema.yml",
+            "data/graph_schemas/"
+            "config_pretrained_embeddings_spacy_duckling_predict_schema.yml",
+        ),
     ],
 )
 def test_generate_predict_graph(

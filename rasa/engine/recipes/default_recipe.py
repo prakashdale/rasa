@@ -15,6 +15,7 @@ from rasa.engine.storage.resource import Resource
 
 from rasa.nlu.classifiers.classifier import IntentClassifier
 from rasa.nlu.classifiers.diet_classifier import DIETClassifier
+from rasa.nlu.classifiers.mitie_intent_classifier import MitieIntentClassifier
 from rasa.nlu.classifiers.sklearn_intent_classifier import SklearnIntentClassifier
 from rasa.nlu.extractors.crf_entity_extractor import CRFEntityExtractor
 from rasa.nlu.extractors.entity_synonyms import EntitySynonymMapper
@@ -27,10 +28,15 @@ from rasa.nlu.featurizers.dense_featurizer.lm_featurizer import LanguageModelFea
 from rasa.nlu.featurizers.dense_featurizer.mitie_featurizer import MitieFeaturizer
 from rasa.nlu.featurizers.dense_featurizer.spacy_featurizer import SpacyFeaturizer
 from rasa.nlu.featurizers.featurizer import Featurizer
+from rasa.nlu.featurizers.sparse_featurizer.count_vectors_featurizer import (
+    CountVectorsFeaturizer,
+)
 from rasa.nlu.featurizers.sparse_featurizer.lexical_syntactic_featurizer import (
     LexicalSyntacticFeaturizer,
 )
 from rasa.nlu.selectors.response_selector import ResponseSelector
+from rasa.nlu.tokenizers.mitie_tokenizer import MitieTokenizer
+from rasa.nlu.tokenizers.spacy_tokenizer import SpacyTokenizer
 from rasa.nlu.tokenizers.tokenizer import Tokenizer
 from rasa.nlu.utils.mitie_utils import MitieNLP
 from rasa.nlu.utils.spacy_utils import SpacyNLP
@@ -117,6 +123,16 @@ trainable_extractors = [
     EntitySynonymMapper,
 ]
 
+model_providers = {
+    SpacyNLP.__name__: [SpacyEntityExtractor, CountVectorsFeaturizer],
+    MitieNLP.__name__: [
+        MitieTokenizer,
+        MitieFeaturizer,
+        MitieEntityExtractor,
+        MitieIntentClassifier,
+    ],
+}
+
 default_predict_kwargs = dict(constructor_name="load", eager=True, is_target=False,)
 
 
@@ -198,7 +214,11 @@ class DefaultV1Recipe(Recipe):
             component = rasa.nlu.registry.get_component_class(component_name)
             component_name = f"{component.__name__}{idx}"
 
-            if issubclass(component, Tokenizer):
+            if issubclass(component, (SpacyNLP, MitieNLP)):
+                last_run_node = self._add_nlu_process_node(
+                    train_nodes, component, component_name, last_run_node, item
+                )
+            elif issubclass(component, Tokenizer):
                 last_run_node = tokenizer = self._add_nlu_process_node(
                     train_nodes, component, component_name, last_run_node, item
                 )
@@ -232,8 +252,6 @@ class DefaultV1Recipe(Recipe):
                 issubclass(component, EntityExtractor)
                 and component in trainable_extractors
             ):
-                from_resource = None
-                # if component in trainable_extractors:
                 from_resource = self._add_nlu_train_node(
                     train_nodes, component, component_name, last_run_node, item
                 )
@@ -280,15 +298,51 @@ class DefaultV1Recipe(Recipe):
         if from_resource:
             resource_needs = {"resource": from_resource}
 
+        model_provider_needs = self._get_model_provider_needs(
+            train_nodes, component_class,
+        )
+
         node_name = f"run_{component_name}"
         train_nodes[node_name] = SchemaNode(
-            needs={"training_data": last_run_node, **resource_needs},
+            needs={
+                "training_data": last_run_node,
+                **resource_needs,
+                **model_provider_needs,
+            },
             uses=component_class,
             constructor_name="load",
             fn="process_training_data",
             config=component_config,
         )
         return node_name
+
+    def _get_model_provider_needs(
+        self,
+        train_nodes: Dict[Text, SchemaNode],
+        component_class: Type[GraphComponent],
+    ) -> Dict[Text, Text]:
+        model_provider_needs = {}
+        pretrained_model_provider = next(
+            (
+                provider_component
+                for provider_component, dependent_components in model_providers.items()
+                if component_class in dependent_components
+            ),
+            None,
+        )
+        if pretrained_model_provider:
+            node_name_of_provider = next(
+                (
+                    node_name
+                    for node_name, node in train_nodes.items()
+                    if node.uses.__name__ == pretrained_model_provider
+                ),
+                None,
+            )
+            if node_name_of_provider:
+                model_provider_needs["model"] = node_name_of_provider
+
+        return model_provider_needs
 
     def _add_core_train_nodes(
         self,
@@ -452,7 +506,9 @@ class DefaultV1Recipe(Recipe):
             component = rasa.nlu.registry.get_component_class(component_name)
             component_name = f"{component.__name__}{idx}"
             if issubclass(component, (SpacyNLP, MitieNLP)):
-                pass
+                last_run_node = self._add_nlu_predict_node_from_train(
+                    predict_nodes, component_name, train_nodes, last_run_node
+                )
             elif issubclass(component, Tokenizer):
                 last_run_node = self._add_nlu_predict_node_from_train(
                     predict_nodes, component_name, train_nodes, last_run_node
@@ -552,9 +608,12 @@ class DefaultV1Recipe(Recipe):
         last_run_node: Text,
     ) -> Text:
         node_name = f"run_{component_name}"
+
+        model_provider_needs = self._get_model_provider_needs(predict_nodes, node.uses,)
+
         predict_nodes[node_name] = dataclasses.replace(
             node,
-            needs={"messages": last_run_node},
+            needs={"messages": last_run_node, **model_provider_needs},
             fn="process",
             **default_predict_kwargs,
         )

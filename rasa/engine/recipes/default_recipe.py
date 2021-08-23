@@ -143,6 +143,7 @@ class DefaultV1Recipe(Recipe):
         self, config: Dict, cli_parameters: Dict[Text, Any]
     ) -> Tuple[GraphSchema, GraphSchema]:
         self._use_core = bool(config.get("policies"))
+        self._use_nlu = bool(config.get("pipeline"))
 
         train_nodes, featurizers, tokenizer = self._create_train_nodes(config)
         predict_nodes = self._create_predict_nodes(
@@ -179,7 +180,14 @@ class DefaultV1Recipe(Recipe):
                 config={},
             ),
         }
-        featurizers, tokenizer = self._add_nlu_train_nodes(train_config, train_nodes)
+
+        featurizers = []
+        tokenizer = None
+
+        if self._use_nlu:
+            featurizers, tokenizer = self._add_nlu_train_nodes(
+                train_config, train_nodes
+            )
 
         if self._use_core:
             self._add_core_train_nodes(
@@ -387,9 +395,11 @@ class DefaultV1Recipe(Recipe):
             config={},
         )
 
-        node_with_e2e_features = self._add_end_to_end_features_for_training(
-            featurizers, tokenizer, train_nodes
-        )
+        node_with_e2e_features = None
+        if self._use_nlu:
+            node_with_e2e_features = self._add_end_to_end_features_for_training(
+                featurizers, tokenizer, train_nodes
+            )
 
         import rasa.core.registry
 
@@ -403,7 +413,8 @@ class DefaultV1Recipe(Recipe):
                     "domain": "domain_without_responses_provider",
                     **(
                         {"end_to_end_features": node_with_e2e_features}
-                        if component in policies_with_e2e_support
+                        if node_with_e2e_features
+                        and component in policies_with_e2e_support
                         else {}
                     ),
                 },
@@ -467,9 +478,13 @@ class DefaultV1Recipe(Recipe):
 
         predict_config = copy.deepcopy(config)
         predict_nodes = {}
-        last_run_node = self._add_nlu_predict_nodes(
-            predict_config, predict_nodes, train_nodes
-        )
+
+        last_run_node = None
+
+        if self._use_nlu:
+            last_run_node = self._add_nlu_predict_nodes(
+                predict_config, predict_nodes, train_nodes
+            )
 
         if self._use_core:
             self._add_core_predict_nodes(
@@ -624,22 +639,23 @@ class DefaultV1Recipe(Recipe):
         self,
         predict_config: Dict[Text, Any],
         predict_nodes: Dict[Text, SchemaNode],
-        last_run_node: Text,
+        last_run_node: Optional[Text],
         train_nodes: Dict[Text, SchemaNode],
         tokenizer: Optional[Text],
         featurizers: List[Text],
     ) -> None:
         import rasa.core.registry
 
-        predict_nodes["nlu_prediction_to_history_adder"] = SchemaNode(
-            **default_predict_kwargs,
-            # TODO: I think there is a bug in our Dask Runner for this case as
-            # the input will override `messages`
-            needs={"messages": last_run_node},
-            uses=NLUPredictionToHistoryAdder,
-            fn="process",
-            config={},
-        )
+        if last_run_node:
+            predict_nodes["nlu_prediction_to_history_adder"] = SchemaNode(
+                **default_predict_kwargs,
+                # TODO: I think there is a bug in our Dask Runner for this case as
+                # the input will override `messages`
+                needs={"messages": last_run_node},
+                uses=NLUPredictionToHistoryAdder,
+                fn="process",
+                config={},
+            )
         predict_nodes["domain_provider"] = SchemaNode(
             **default_predict_kwargs,
             needs={},
@@ -649,11 +665,19 @@ class DefaultV1Recipe(Recipe):
             resource=Resource("domain_provider"),
         )
 
-        node_with_e2e_features = self._add_end_to_end_features_for_inference(
-            predict_nodes, tokenizer, featurizers
-        )
+        nlu_merge_needs = {}
+        node_with_e2e_features = None
+
+        if self._use_nlu and last_run_node:
+            node_with_e2e_features = self._add_end_to_end_features_for_inference(
+                predict_nodes, tokenizer, featurizers
+            )
+            # The tracker has to be provided via `runner.run(..., inputs=...)` in this
+            # case
+            nlu_merge_needs = {"tracker": "nlu_prediction_to_history_adder"}
 
         policies: List[Text] = []
+
         for idx, item in enumerate(predict_config["policies"]):
             component_name = item.pop("name")
             component = rasa.core.registry.policy_from_module_path(component_name)
@@ -664,7 +688,7 @@ class DefaultV1Recipe(Recipe):
                 train_nodes[train_node_name],
                 **default_predict_kwargs,
                 needs={
-                    "tracker": "nlu_prediction_to_history_adder",
+                    **nlu_merge_needs,
                     "domain": "domain_provider",
                     **(
                         {"end_to_end_features": node_with_e2e_features}

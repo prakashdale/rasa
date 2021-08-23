@@ -1,0 +1,63 @@
+domain_provider:
+  needs: {}
+  uses: rasa.engine.recipes.default_recipe.DomainProvider
+  constructor_name: load
+  fn: provide_persisted
+  config: {}
+  eager: true
+  is_target: false
+  is_input: false
+  resource:
+    name: domain_provider
+run_MemoizationPolicy0:
+  needs:
+    domain: domain_provider
+  uses: rasa.core.policies.memoization.MemoizationPolicy
+  constructor_name: load
+  fn: predict_action_probabilities
+  config:
+    max_history: 5
+  eager: true
+  is_target: false
+  is_input: false
+  resource:
+    name: train_MemoizationPolicy0
+run_RulePolicy1:
+  needs:
+    domain: domain_provider
+  uses: rasa.core.policies.rule_policy.RulePolicy
+  constructor_name: load
+  fn: predict_action_probabilities
+  config: {}
+  eager: true
+  is_target: false
+  is_input: false
+  resource:
+    name: train_RulePolicy1
+run_TEDPolicy2:
+  needs:
+    domain: domain_provider
+    end_to_end_features: null
+  uses: rasa.core.policies._ted_policy.TEDPolicy
+  constructor_name: load
+  fn: predict_action_probabilities
+  config:
+    max_history: 5
+  eager: true
+  is_target: false
+  is_input: false
+  resource:
+    name: train_TEDPolicy2
+select_prediction:
+  needs:
+    policy0: run_MemoizationPolicy0
+    policy1: run_RulePolicy1
+    policy2: run_TEDPolicy2
+  uses: rasa.core.policies.ensemble.SimplePolicyEnsemble
+  constructor_name: load
+  fn: select
+  config: {}
+  eager: true
+  is_target: false
+  is_input: false
+  resource: null

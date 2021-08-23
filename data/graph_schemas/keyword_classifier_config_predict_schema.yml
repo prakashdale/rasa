@@ -1,0 +1,32 @@
+nlu_message_converter:
+  needs: {}
+  uses: rasa.engine.recipes.default_recipe.NLUMessageConverter
+  constructor_name: load
+  fn: convert
+  config: {}
+  eager: true
+  is_target: false
+  is_input: false
+  resource: null
+run_KeywordIntentClassifier0:
+  needs:
+    messages: nlu_message_converter
+  uses: rasa.nlu.classifiers.keyword_intent_classifier.KeywordIntentClassifier
+  constructor_name: load
+  fn: process
+  config: {}
+  eager: true
+  is_target: false
+  is_input: false
+  resource: null
+run_RegexClassifier:
+  needs:
+    messages: run_KeywordIntentClassifier0
+  uses: rasa.engine.recipes.default_recipe.RegexClassifier
+  constructor_name: load
+  fn: process
+  config: {}
+  eager: true
+  is_target: false
+  is_input: false
+  resource: null

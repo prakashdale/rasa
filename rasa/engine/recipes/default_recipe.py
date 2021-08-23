@@ -36,10 +36,10 @@ from rasa.nlu.featurizers.sparse_featurizer.lexical_syntactic_featurizer import 
 )
 from rasa.nlu.selectors.response_selector import ResponseSelector
 from rasa.nlu.tokenizers.mitie_tokenizer import MitieTokenizer
-from rasa.nlu.tokenizers.spacy_tokenizer import SpacyTokenizer
 from rasa.nlu.tokenizers.tokenizer import Tokenizer
 from rasa.nlu.utils.mitie_utils import MitieNLP
 from rasa.nlu.utils.spacy_utils import SpacyNLP
+from rasa.utils.tensorflow.constants import EPOCHS
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,12 @@ model_providers = {
 
 default_predict_kwargs = dict(constructor_name="load", eager=True, is_target=False,)
 
+cli_args_mapping = {
+    MitieIntentClassifier: ["num_threads"],
+    MitieEntityExtractor: ["num_threads"],
+    SklearnIntentClassifier: ["num_threads"],
+}
+
 
 class DefaultV1Recipe(Recipe):
     name = "default.v1"
@@ -145,7 +151,9 @@ class DefaultV1Recipe(Recipe):
         self._use_core = bool(config.get("policies"))
         self._use_nlu = bool(config.get("pipeline"))
 
-        train_nodes, featurizers, tokenizer = self._create_train_nodes(config)
+        train_nodes, featurizers, tokenizer = self._create_train_nodes(
+            config, cli_parameters
+        )
         predict_nodes = self._create_predict_nodes(
             config, featurizers, tokenizer, train_nodes
         )
@@ -153,16 +161,25 @@ class DefaultV1Recipe(Recipe):
         return GraphSchema(train_nodes), GraphSchema(predict_nodes)
 
     def _create_train_nodes(
-        self, config: Dict[Text, Any]
+        self, config: Dict[Text, Any], cli_parameters: Dict[Text, Any]
     ) -> Tuple[Dict[Text, SchemaNode], List[Text], Optional[Text]]:
         train_config = copy.deepcopy(config)
+
+        training_data_paths = cli_parameters.get("data") or []
+        for arg in ["stories", "nlu"]:
+            if cli_parameters.get(arg):
+                training_data_paths.append(cli_parameters[arg])
+
         train_nodes = {
             "project_provider": SchemaNode(
                 needs={},
                 uses=ProjectProvider,
                 constructor_name="create",
                 fn="provide",
-                config={},
+                config={
+                    "domain_path": cli_parameters.get("domain"),
+                    "training_data_paths": training_data_paths,
+                },
                 is_input=True,
             ),
             "schema_validator": SchemaNode(
@@ -186,29 +203,35 @@ class DefaultV1Recipe(Recipe):
 
         if self._use_nlu:
             featurizers, tokenizer = self._add_nlu_train_nodes(
-                train_config, train_nodes
+                train_config, train_nodes, cli_parameters
             )
 
         if self._use_core:
             self._add_core_train_nodes(
-                train_config, train_nodes, tokenizer, featurizers
+                train_config, train_nodes, tokenizer, featurizers, cli_parameters
             )
 
         return train_nodes, featurizers, tokenizer
 
     def _add_nlu_train_nodes(
-        self, train_config: Dict[Text, Any], train_nodes: Dict[Text, SchemaNode]
+        self,
+        train_config: Dict[Text, Any],
+        train_nodes: Dict[Text, SchemaNode],
+        cli_parameters: Dict[Text, Any],
     ) -> Tuple[List[Text], Optional[Text]]:
         import rasa.nlu.registry
 
+        persist_nlu_data = bool(cli_parameters.get("persist_nlu_data"))
         train_nodes["nlu_training_data_provider"] = SchemaNode(
             needs={"importer": "finetuning_validator"},
             uses=NLUTrainingDataProvider,
             constructor_name="create",
             fn="provide",
-            config={},
-            # TODO: not always
-            is_target=True,
+            config={
+                "language": train_config.get("language"),
+                "persist_nlu_data": persist_nlu_data,
+            },
+            is_target=persist_nlu_data,
             is_input=True,
         )
 
@@ -234,7 +257,12 @@ class DefaultV1Recipe(Recipe):
                 from_resource = None
                 if component not in pretrained_featurizers:
                     from_resource = self._add_nlu_train_node(
-                        train_nodes, component, component_name, last_run_node, item
+                        train_nodes,
+                        component,
+                        component_name,
+                        last_run_node,
+                        item,
+                        cli_parameters,
                     )
 
                 last_run_node = last_feature_node = self._add_nlu_process_node(
@@ -251,7 +279,12 @@ class DefaultV1Recipe(Recipe):
             elif issubclass(component, IntentClassifier):
                 if component in trainable_classifiers:
                     _ = self._add_nlu_train_node(
-                        train_nodes, component, component_name, last_feature_node, item
+                        train_nodes,
+                        component,
+                        component_name,
+                        last_feature_node,
+                        item,
+                        cli_parameters,
                     )
                 else:
                     # We don't need non trainable classifiers
@@ -261,7 +294,12 @@ class DefaultV1Recipe(Recipe):
                 and component in trainable_extractors
             ):
                 from_resource = self._add_nlu_train_node(
-                    train_nodes, component, component_name, last_run_node, item
+                    train_nodes,
+                    component,
+                    component_name,
+                    last_run_node,
+                    item,
+                    cli_parameters,
                 )
                 last_run_node = self._add_nlu_process_node(
                     train_nodes,
@@ -281,17 +319,38 @@ class DefaultV1Recipe(Recipe):
         component_name: Text,
         last_run_node: Text,
         config: Dict[Text, Any],
+        cli_parameters: Dict[Text, Any],
     ) -> Text:
+        config_from_cli = self._extra_config_from_cli(cli_parameters, component)
+
         train_node_name = f"train_{component_name}"
         train_nodes[train_node_name] = SchemaNode(
             needs={"training_data": last_run_node},
             uses=component,
             constructor_name="create",
             fn="train",
-            config=config,
+            config={**config, **config_from_cli},
             is_target=True,
         )
         return train_node_name
+
+    def _extra_config_from_cli(
+        self, cli_parameters: Dict[Text, Any], component: Type[GraphComponent]
+    ) -> Dict[Text, Any]:
+        config_from_cli = {
+            param: cli_parameters[param]
+            for param in cli_args_mapping.get(component, [])
+            if param in cli_parameters
+        }
+
+        # TODO: Comment in once all components are adapted
+        # if (
+        #     "epoch_fraction" in cli_parameters
+        #     and EPOCHS in component.get_default_config()
+        # ):
+        #     config_from_cli["epoch_fraction"] = cli_parameters["epoch_fraction"]
+
+        return config_from_cli
 
     def _add_nlu_process_node(
         self,
@@ -358,6 +417,7 @@ class DefaultV1Recipe(Recipe):
         train_nodes: Dict[Text, SchemaNode],
         tokenizer: Optional[Text],
         featurizers: List[Text],
+        cli_parameters: Dict[Text, Any],
     ) -> None:
         train_nodes["domain_provider"] = SchemaNode(
             needs={"importer": "finetuning_validator"},
@@ -392,7 +452,11 @@ class DefaultV1Recipe(Recipe):
             uses=TrainingTrackerProvider,
             constructor_name="create",
             fn="provide",
-            config={},
+            config={
+                param: cli_parameters[param]
+                for param in {"debug_plots", "augmentation"}
+                if param in cli_parameters
+            },
         )
 
         node_with_e2e_features = None
@@ -406,6 +470,10 @@ class DefaultV1Recipe(Recipe):
         for idx, item in enumerate(train_config["policies"]):
             component_name = item.pop("name")
             component = rasa.core.registry.policy_from_module_path(component_name)
+
+            extra_config_from_cli = self._extra_config_from_cli(
+                cli_parameters, component
+            )
 
             train_nodes[f"train_{component.__name__}{idx}"] = SchemaNode(
                 needs={
@@ -422,7 +490,7 @@ class DefaultV1Recipe(Recipe):
                 constructor_name="create",
                 fn="train",
                 is_target=True,
-                config=item,
+                config={**item, **extra_config_from_cli},
             )
 
     def _add_end_to_end_features_for_training(
@@ -522,11 +590,11 @@ class DefaultV1Recipe(Recipe):
             component_name = f"{component.__name__}{idx}"
             if issubclass(component, (SpacyNLP, MitieNLP)):
                 last_run_node = self._add_nlu_predict_node_from_train(
-                    predict_nodes, component_name, train_nodes, last_run_node
+                    predict_nodes, component_name, train_nodes, last_run_node, item
                 )
             elif issubclass(component, Tokenizer):
                 last_run_node = self._add_nlu_predict_node_from_train(
-                    predict_nodes, component_name, train_nodes, last_run_node
+                    predict_nodes, component_name, train_nodes, last_run_node, item
                 )
             elif issubclass(component, Featurizer):
                 last_run_node = self._add_nlu_predict_node_from_train(
@@ -534,6 +602,7 @@ class DefaultV1Recipe(Recipe):
                     component_name,
                     train_nodes,
                     last_run_node,
+                    item,
                     from_resource=component not in pretrained_featurizers,
                 )
             elif issubclass(component, IntentClassifier):
@@ -543,6 +612,7 @@ class DefaultV1Recipe(Recipe):
                         component_name,
                         train_nodes,
                         last_run_node,
+                        item,
                         from_resource=component in trainable_classifiers,
                     )
                 else:
@@ -567,6 +637,7 @@ class DefaultV1Recipe(Recipe):
                         component_name,
                         train_nodes,
                         last_run_node,
+                        item,
                         from_resource=component in trainable_extractors,
                     )
                 else:
@@ -600,6 +671,7 @@ class DefaultV1Recipe(Recipe):
         node_name: Text,
         train_nodes: Dict[Text, SchemaNode],
         last_run_node: Text,
+        item_config: Dict[Text, Any],
         from_resource: bool = False,
     ) -> Text:
         train_node_name = f"run_{node_name}"
@@ -610,7 +682,9 @@ class DefaultV1Recipe(Recipe):
 
         return self._add_nlu_predict_node(
             predict_nodes,
-            dataclasses.replace(train_nodes[train_node_name], resource=resource,),
+            dataclasses.replace(
+                train_nodes[train_node_name], resource=resource, config=item_config
+            ),
             node_name,
             last_run_node,
         )

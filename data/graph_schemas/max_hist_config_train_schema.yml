@@ -3,7 +3,9 @@ project_provider:
   uses: rasa.engine.recipes.default_recipe.ProjectProvider
   constructor_name: create
   fn: provide
-  config: {}
+  config:
+    domain_path: null
+    training_data_paths: [ ]
   eager: false
   is_target: false
   is_input: true

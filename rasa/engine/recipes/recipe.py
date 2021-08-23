@@ -6,6 +6,7 @@ from typing import Text, Tuple, Dict, Any, Optional
 import rasa.shared.utils.io
 from rasa.engine.graph import GraphSchema
 from rasa.shared.exceptions import RasaException
+from rasa.shared.importers.autoconfig import TrainingType
 
 
 class InvalidRecipeException(RasaException):
@@ -38,6 +39,9 @@ class Recipe(abc.ABC):
 
     @abc.abstractmethod
     def schemas_for_config(
-        self, config: Dict, cli_parameters: Dict[Text, Any]
+        self,
+        config: Dict,
+        cli_parameters: Dict[Text, Any],
+        training_type: TrainingType = TrainingType.BOTH,
     ) -> Tuple[GraphSchema, GraphSchema]:
         raise NotImplementedError()

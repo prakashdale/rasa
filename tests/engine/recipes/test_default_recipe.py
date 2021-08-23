@@ -9,6 +9,7 @@ from rasa.engine.recipes.recipe import Recipe
 from rasa.nlu.classifiers.mitie_intent_classifier import MitieIntentClassifier
 from rasa.nlu.classifiers.sklearn_intent_classifier import SklearnIntentClassifier
 from rasa.nlu.extractors.mitie_entity_extractor import MitieEntityExtractor
+from rasa.shared.importers.autoconfig import TrainingType
 
 
 def test_recipe_for_name():
@@ -17,27 +18,43 @@ def test_recipe_for_name():
 
 
 @pytest.mark.parametrize(
-    "config_path, expected_train_schema_path, expected_predict_schema_path",
+    "config_path, expected_train_schema_path, expected_predict_schema_path, "
+    "training_type",
     [
         # The default config is the config which most users run
         (
             "rasa/shared/importers/default_config.yml",
             "data/graph_schemas/default_config_train_schema.yml",
             "data/graph_schemas/default_config_predict_schema.yml",
+            TrainingType.BOTH,
         ),
-        # A config which uses Spacy and Duckling does not have Core model
+        (
+            "rasa/shared/importers/default_config.yml",
+            "data/graph_schemas/default_config_core_train_schema.yml",
+            "data/graph_schemas/default_config_core_predict_schema.yml",
+            TrainingType.CORE,
+        ),
+        (
+            "rasa/shared/importers/default_config.yml",
+            "data/graph_schemas/default_config_nlu_train_schema.yml",
+            "data/graph_schemas/default_config_nlu_predict_schema.yml",
+            TrainingType.NLU,
+        ),
+        # A config which uses Spacy and Duckling does not have Core model config
         (
             "data/test_config/config_pretrained_embeddings_spacy_duckling.yml",
             "data/graph_schemas/"
             "config_pretrained_embeddings_spacy_duckling_train_schema.yml",
             "data/graph_schemas/"
             "config_pretrained_embeddings_spacy_duckling_predict_schema.yml",
+            TrainingType.BOTH,
         ),
         # A minimal NLU config without Core model
         (
             "data/test_config/keyword_classifier_config.yml",
             "data/graph_schemas/keyword_classifier_config_train_schema.yml",
             "data/graph_schemas/keyword_classifier_config_predict_schema.yml",
+            TrainingType.BOTH,
         ),
         # A config which uses Mitie and does not have Core model
         (
@@ -45,19 +62,22 @@ def test_recipe_for_name():
             "data/graph_schemas/config_pretrained_embeddings_mitie_train_schema.yml",
             "data/graph_schemas/"
             "config_pretrained_embeddings_mitie_predict_schema.yml",
+            TrainingType.BOTH,
         ),
-        # A core only model
+        # A core only model because of no pipeline
         (
             "data/test_config/max_hist_config.yml",
             "data/graph_schemas/max_hist_config_train_schema.yml",
             "data/graph_schemas/max_hist_config_predict_schema.yml",
+            TrainingType.BOTH,
         ),
     ],
 )
-def test_generate_predict_graph(
+def test_generate_graphs(
     config_path: Text,
     expected_train_schema_path: Text,
     expected_predict_schema_path: Text,
+    training_type,
 ):
     expected_schema_as_dict = rasa.shared.utils.io.read_yaml_file(
         expected_train_schema_path
@@ -71,8 +91,10 @@ def test_generate_predict_graph(
 
     config = rasa.shared.utils.io.read_yaml_file(config_path)
 
-    recipe = Recipe.recipe_for_name(DefaultV1Recipe.name)
-    train_schema, predict_schema = recipe.schemas_for_config(config, {})
+    recipe = Recipe.recipe_for_name(DefaultV1Recipe.name,)
+    train_schema, predict_schema = recipe.schemas_for_config(
+        config, {}, training_type=training_type
+    )
 
     for node_name, node in expected_train_schema.nodes.items():
         assert train_schema.nodes[node_name] == node

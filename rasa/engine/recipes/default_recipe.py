@@ -39,6 +39,7 @@ from rasa.nlu.tokenizers.mitie_tokenizer import MitieTokenizer
 from rasa.nlu.tokenizers.tokenizer import Tokenizer
 from rasa.nlu.utils.mitie_utils import MitieNLP
 from rasa.nlu.utils.spacy_utils import SpacyNLP
+from rasa.shared.importers.autoconfig import TrainingType
 from rasa.utils.tensorflow.constants import EPOCHS
 
 logger = logging.getLogger(__name__)
@@ -145,11 +146,22 @@ cli_args_mapping = {
 class DefaultV1Recipe(Recipe):
     name = "default.v1"
 
+    def __init__(self) -> None:
+        self._use_core = True
+        self._use_nlu = True
+
     def schemas_for_config(
-        self, config: Dict, cli_parameters: Dict[Text, Any]
+        self,
+        config: Dict,
+        cli_parameters: Dict[Text, Any],
+        training_type: TrainingType = TrainingType.BOTH,
     ) -> Tuple[GraphSchema, GraphSchema]:
-        self._use_core = bool(config.get("policies"))
-        self._use_nlu = bool(config.get("pipeline"))
+        self._use_core = (
+            bool(config.get("policies")) and not training_type == TrainingType.NLU
+        )
+        self._use_nlu = (
+            bool(config.get("pipeline")) and not training_type == TrainingType.CORE
+        )
 
         train_nodes, featurizers, tokenizer = self._create_train_nodes(
             config, cli_parameters
@@ -481,8 +493,7 @@ class DefaultV1Recipe(Recipe):
                     "domain": "domain_without_responses_provider",
                     **(
                         {"end_to_end_features": node_with_e2e_features}
-                        if node_with_e2e_features
-                        and component in policies_with_e2e_support
+                        if component in policies_with_e2e_support
                         else {}
                     ),
                 },

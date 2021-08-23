@@ -1,11 +1,16 @@
-from typing import Text
+from typing import Text, Dict, Any
 
 import pytest
 
 import rasa.shared.utils.io
-from rasa.engine.graph import GraphSchema
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
+from rasa.engine.graph import GraphSchema, GraphComponent, ExecutionContext
+from rasa.engine.recipes.default_recipe import (
+    DefaultV1Recipe,
+    DefaultV1RecipeRegisterException,
+)
 from rasa.engine.recipes.recipe import Recipe
+from rasa.engine.storage.resource import Resource
+from rasa.engine.storage.storage import ModelStorage
 from rasa.nlu.classifiers.mitie_intent_classifier import MitieIntentClassifier
 from rasa.nlu.classifiers.sklearn_intent_classifier import SklearnIntentClassifier
 from rasa.nlu.extractors.mitie_entity_extractor import MitieEntityExtractor
@@ -251,3 +256,40 @@ def test_num_threads_interpolation():
 #         assert predict_schema.nodes[node_name] == node
 #
 #     assert predict_schema == expected_predict_schema
+
+
+def test_register_component():
+    @DefaultV1Recipe.register(DefaultV1Recipe.ComponentType.MESSAGE_TOKENIZER)
+    class MyClass(GraphComponent):
+        @classmethod
+        def create(
+            cls,
+            config: Dict[Text, Any],
+            model_storage: ModelStorage,
+            resource: Resource,
+            execution_context: ExecutionContext,
+        ) -> GraphComponent:
+            return cls()
+
+    assert (
+        DefaultV1Recipe._type_for(MyClass)
+        == DefaultV1Recipe.ComponentType.MESSAGE_TOKENIZER
+    )
+    assert MyClass()
+
+
+def test_register_invalid_component():
+    with pytest.raises(DefaultV1RecipeRegisterException):
+
+        @DefaultV1Recipe.register(DefaultV1Recipe.ComponentType.MESSAGE_TOKENIZER)
+        class MyClass:
+            pass
+
+
+def test_retrieve_not_registered_class():
+    class MyClass:
+        pass
+
+    with pytest.raises(DefaultV1RecipeRegisterException):
+        # noinspection PyTypeChecker
+        DefaultV1Recipe._type_for(MyClass)

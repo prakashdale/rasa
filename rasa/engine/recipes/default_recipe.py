@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import enum
 import logging
-from typing import Dict, Text, Any, Tuple, Type, Optional, List
+from enum import Enum
+from typing import Dict, Text, Any, Tuple, Type, Optional, List, Callable
 
 import dataclasses
 
@@ -39,10 +41,13 @@ from rasa.nlu.tokenizers.mitie_tokenizer import MitieTokenizer
 from rasa.nlu.tokenizers.tokenizer import Tokenizer
 from rasa.nlu.utils.mitie_utils import MitieNLP
 from rasa.nlu.utils.spacy_utils import SpacyNLP
+from rasa.shared.exceptions import RasaException
 from rasa.shared.importers.autoconfig import TrainingType
-from rasa.utils.tensorflow.constants import EPOCHS
+
+# from rasa.utils.tensorflow.constants import EPOCHS
 
 logger = logging.getLogger(__name__)
+
 
 # TODO: Remove once they are implemented
 class ProjectProvider(GraphComponent):
@@ -143,12 +148,62 @@ cli_args_mapping = {
 }
 
 
+class DefaultV1RecipeRegisterException(RasaException):
+    """If you register a class which is not of type `GraphComponent`."""
+
+    pass
+
+
 class DefaultV1Recipe(Recipe):
+    """Recipe which converts the normal model config to train and predict graph."""
+
+    @enum.unique
+    class ComponentType(Enum):
+        """Enum to categorize and place custom components correctly in the graph."""
+
+        MESSAGE_TOKENIZER = 0
+        TRAINABLE_MESSAGE_FEATURIZER = 1
+        PRETRAINED_MESSAGE_FEATURIZER = 2
+        TRAINABLE_INTENT_CLASSIFIER = 3
+        PRETRAINED_INTENT_CLASSIFIER = 4
+        TRAINABLE_ENTITY_EXTRACTOR = 5
+        PRETRAINED_ENTITY_EXTRACTOR = 6
+        POLICY_WITH_END_TO_END_SUPPORT = 7
+        MODEL_LOADER = 8
+
     name = "default.v1"
+    registered_components: Dict[Type[GraphComponent], ComponentType] = {}
 
     def __init__(self) -> None:
+        """Creates recipe."""
         self._use_core = True
         self._use_nlu = True
+
+    @classmethod
+    def register(
+        cls, component_type: ComponentType
+    ) -> Callable[[Type[GraphComponent]], Type[GraphComponent]]:
+        def f(registered_class: Type[GraphComponent]) -> Type[GraphComponent]:
+            if not issubclass(registered_class, GraphComponent):
+                raise DefaultV1RecipeRegisterException(
+                    f"Failed to register class '{registered_class.__name__}' with "
+                    f"the recipe '{cls.name}'. The class has to be of type "
+                    f"'{GraphComponent.__name__}'."
+                )
+            cls.registered_components[registered_class] = component_type
+            return registered_class
+
+        return f
+
+    @classmethod
+    def _type_for(cls, clazz: Type[GraphComponent]) -> Optional[ComponentType]:
+        if clazz not in cls.registered_components:
+            raise DefaultV1RecipeRegisterException(
+                f"It seems that '{clazz.__name__}' has not been registered with the "
+                f"'{cls.name}' recipe. Please make sure to register your class by "
+                f"using the decorator 'DefaultV1Recipe.register(...)' with your class."
+            )
+        return cls.registered_components.get(clazz)
 
     def schemas_for_config(
         self,
